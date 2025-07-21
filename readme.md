@@ -27,3 +27,5 @@ or any real pointers from the original python script itself. Said limitations in
 - Monochrome layers will probably be very mangled. I could not find a way to determine what layer is a mask and what layer isn't besides assuming all monochrome layers are masks. This seems to work in testing, but your mileage will vary
 - mipmap information is seemingly useless, it is not exported in any branches to PNG in the python script, and I wasn't about to reverse the photoshop format to do that myself
 - Some layer blend effects are either missing or wrong; I tried my best to map them to a BlendComposition class I found online, but it's not perfect and some of them are not implemented, due to me not having test files that called for them
+- gradients apparently supported in the python script, but not here. They would require doing the math by hand, and would also have to figure out the very vague data written in the PSD export code to get them
+- Some .clip files with have layers misaligned for seemingly no reason. I have tried looking into this and found no solutions. They align correctly in the output PSD, so I'm clearly missing something.
