@@ -5,12 +5,11 @@ import com.eziosoft.clipreader.utils.ImageUtils;
 import com.eziosoft.clipreader.utils.chunkUtils;
 import com.eziosoft.clipreader.utils.sqliteUtils;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.IOUtils;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -28,12 +27,12 @@ public class ClipReader {
     /**
      * this is the main function you call to get a preview of a clip file
      * ported from script "extract_csp" lines 2994 to 3052?
-     * @param input clip file you want to read
+     * @param stream  stream of data from clip file you want to read
      * @return bufferedimage containing clip image data
      */
-    public static BufferedImage readClipFile(File input) throws IOException {
+    public static BufferedImage readClipStream(InputStream stream) throws IOException{
         // do the basic init crap, since thats in its own function now
-        BasicClipData basicClipData = readChunksandSQL(input);
+        BasicClipData basicClipData = readChunksandSQL(stream);
         SqliteData sqldata = basicClipData.getSqldata();
         ArrayList<FileChunk> fileChunks = basicClipData.getFileChunks();
         // next, we need to sort all of our layers
@@ -91,15 +90,47 @@ public class ClipReader {
     }
 
     /**
+     * API shim to allow anything using the file method to still funtion
+     * @param input file to read from
+     * @return the rebuilt clip file from the stream
+     * @throws IOException if something breaks horribly
+     */
+    public static BufferedImage readClipFile(File input) throws IOException {
+        // create a stream from the file
+        FileInputStream stream = new FileInputStream(input);
+        // get what we want
+        BufferedImage image = readClipStream(stream);
+        // clean up
+        stream.close();
+        return image;
+    }
+
+    /**
+     * API shim to allow file based methods to still  work with the new stream types
+     * @param input input file to read from
+     * @return object with csp preview information
+     * @throws IOException if something broke horribly
+     */
+    public static CSPPreviewWithMeta readClipFilePreview(File input) throws IOException {
+        // create a stream from the file
+        FileInputStream stream = new FileInputStream(input);
+        // get the data
+        CSPPreviewWithMeta stuff = readClipStreamPreview(stream);
+        // cleanup
+        stream.close();
+        return stuff;
+    }
+
+    /**
      * This does just the bare minimum to read the clip preview information from the .clip file
      * it does not do anything to reassemble the clip file from the layers
-     * @param input file to read in
+     * @param streamin image data to read in
      * @return bufferedimage of preview data
      * @throws IOException if something goes wrong
      */
-    public static CSPPreviewWithMeta readClipFilePreview(File input) throws IOException {
+    public static CSPPreviewWithMeta readClipStreamPreview(InputStream streamin) throws IOException{
         // do the basic init stuff
-        BasicClipData basicClipData = readChunksandSQL(input);
+        BasicClipData basicClipData = readChunksandSQL(streamin);
         SqliteData sqldata = basicClipData.getSqldata();
         // check to make sure the preview data isnt null
         if (sqldata.getCanvas_preview() == null){
@@ -119,14 +150,31 @@ public class ClipReader {
     }
 
     /**
-     * this will read a .clip file and then return all layers that belong to it in an array
-     * mostly a copy paste from the main file
-     * @param input file to read
-     * @return array of images
+     * API shim to allow file-based tests to work with the new
+     * inputstream based methods
+     * @param input file to process
+     * @return arraylist of images of each layer
+     * @throws IOException if something broke horribly
      */
     public static ArrayList<BufferedImage> readClipFileLayers(File input) throws IOException{
+        // create a stream from the file
+        FileInputStream stream = new FileInputStream(input);
+        // run the main function
+        ArrayList<BufferedImage> stuff = readClipStreamLayers(stream);
+        // clean up
+        stream.close();
+        return stuff;
+    }
+
+    /**
+     * this will read a .clip file and then return all layers that belong to it in an array
+     * mostly a copy paste from the main file
+     * @param stream inputstream of the file to read
+     * @return array of images
+     */
+    public static ArrayList<BufferedImage> readClipStreamLayers(InputStream stream) throws IOException{
         // do the basic init crap, since thats in its own function now
-        BasicClipData basicClipData = readChunksandSQL(input);
+        BasicClipData basicClipData = readChunksandSQL(stream);
         SqliteData sqldata = basicClipData.getSqldata();
         ArrayList<FileChunk> fileChunks = basicClipData.getFileChunks();
         System.out.println("Detected layers:");
@@ -170,9 +218,10 @@ public class ClipReader {
      * @return metaobject containing the sqlite data and list of file chunks
      * @throws IOException if something explodes during the process
      */
-    private static BasicClipData readChunksandSQL(File input) throws IOException{
+    private static BasicClipData readChunksandSQL(InputStream input) throws IOException{
         // first we need to read in the entire file, for convience sake
-        byte[] sourcefile = FileUtils.readFileToByteArray(input);
+        // the file has already read in before hand, so we can just patch around this
+        byte[] sourcefile = IOUtils.toByteArray(input);
         // read in all the file chunks
         ArrayList<FileChunk> fileChunks = iterateFileChunks(sourcefile);
         // iterate thru all the chunks
@@ -194,10 +243,51 @@ public class ClipReader {
             System.out.println("error during SQLITE phase");
             throw new IOException("Error while trying to do SQLIte things", e);
         }
+        // delete temp file NOW actually
+        temp_sqlite.delete();
         // make a new object to hold all the data we just got
         BasicClipData basic = new BasicClipData(sqldata, fileChunks);
         // return that metaobject
         return basic;
+    }
+
+    /**
+     * detects if file is valid by looking for the file header.
+     * this usually only requires the first 24 or so bytes of the file, but
+     * some more may be required
+     * @param data read in bytes from the source file
+     * @return true if file is valid; false if it is not valid
+     */
+    public static boolean isProbablyValidFile(byte[] data){
+        // wrap entire thing in try catch loop
+        try {
+            /* this code is copied from the main iterateFileChunks function,
+            just it checks for file header and the first chunk header */
+            // hardcoded constant values from the original script, line 93
+            int file_header_size = 24;
+            // get the header from the data?
+            byte[] file_header = new byte[file_header_size];
+            System.arraycopy(data, 0, file_header, 0, file_header_size);
+            // make sure its a header string, we only need to check the first 8 bytes
+            String temp = new String(file_header, StandardCharsets.UTF_8).substring(0, 8);
+            if (!temp.equals("CSFCHUNK")){
+                throw new IOException("ERROR: read in file does not have the right chunk header!");
+            }
+            // try to verify the first chunk; should be 4 byte long "CHNK" string
+            byte[] tempbyte = new byte[4];
+            System.arraycopy(data, file_header_size, tempbyte, 0, 4);
+            temp = new String(tempbyte, StandardCharsets.UTF_8);
+            if (!temp.equals("CHNK")){
+                throw new IOException("ERROR: failed to find first chunk after header!");
+            }
+            // if we have gotten here without failing any checks, the file is probably valid
+            return true;
+        } catch (Exception e){
+            // fail if any errors are encountered
+            System.err.println("Error while trying to read file:");
+            e.printStackTrace();
+        }
+        return false;
     }
 
 
@@ -207,7 +297,7 @@ public class ClipReader {
      * @param data byte array of the csp file we read in
      * @return list of chunks
      */
-    private static ArrayList<FileChunk> iterateFileChunks(byte[] data){
+    private static ArrayList<FileChunk> iterateFileChunks(byte[] data) throws IOException{
         // temp variable because i fucking hate math
         int fuck;
         // hardcoded constant values from the original script, line 93
@@ -218,14 +308,14 @@ public class ClipReader {
         // make sure its a header string, we only need to check the first 8 bytes
         String temp = new String(file_header, StandardCharsets.UTF_8).substring(0, 8);
         if (!temp.equals("CSFCHUNK")){
-            throw new NullPointerException("ERROR: read in file does not have the right chunk header!");
+            throw new IOException("ERROR: read in file does not have the right chunk header!");
         }
         // try to verify the first chunk; should be 4 byte long "CHNK" string
         byte[] tempbyte = new byte[4];
         System.arraycopy(data, file_header_size, tempbyte, 0, 4);
         temp = new String(tempbyte, StandardCharsets.UTF_8);
         if (!temp.equals("CHNK")){
-            throw new NullPointerException("ERROR: failed to find first chunk after header!");
+            throw new IOException("ERROR: failed to find first chunk after header!");
         }
         // make a array of new chunks
         ArrayList<FileChunk> chunks = new ArrayList<>();
@@ -239,7 +329,7 @@ public class ClipReader {
             // check to see if chunk header
             temp = new String(tempbyte, StandardCharsets.UTF_8);
             if (!temp.equals("CHNK")){
-                throw new NullPointerException("Error: failed to find next chunk after header");
+                throw new IOException("Error: failed to find next chunk after header");
             }
             // do some unknown magic
             // the script heavily uses python : operator, which is essentially
